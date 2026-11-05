@@ -2,6 +2,27 @@
 
 This is a proof of concept for an AI-powered hedge fund. The goal of this project is to explore the use of AI to make trading decisions. This project is for **educational** purposes only and is not intended for real trading or investment.
 
+### Review a paper proposal with BeliefState
+
+Independent BeliefState preview for AI Hedge Fund.
+
+See which assumptions deserve a closer look before you act on an AIHF signal.
+In a saved November 3, 2026 PLTR example, BeliefState puts a published investor's
+next-quarter checks beside the earnings numbers.
+
+![PLTR draft review. Issuer disclosures raise the question of whether shorter deals expand. BeliefState adds Nikhs’s February checks: remaining deal value above $7B, bookings above 1.6× quarterly U.S. commercial revenue, and restored duration-adjusted bookings disclosure.](assets/beliefstate-pltr-before-after.png)
+
+[Palantir earnings release](https://www.sec.gov/Archives/edgar/data/1321655/000132165526000045/a2026q3ex991pressrelease.htm) · [Nikhs's analysis](https://nikhs.substack.com/p/palantir-3q26-the-contract-is-not)
+
+Replay the example from this checkout with Python 3.11 or later. It uses a
+saved fixture and runs without API keys or network access.
+
+```bash
+python3 -m examples.beliefstate_pltr_replay
+```
+
+[Try BeliefState in paper approval](#beliefstate-research) from this checkout.
+
 <img width="2400" height="1460" alt="image" src="https://github.com/user-attachments/assets/e3985623-c226-4c1a-a587-e03fb4eca31e" />
 
 

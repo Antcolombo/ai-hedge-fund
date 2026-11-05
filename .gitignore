@@ -43,6 +43,7 @@ Thumbs.db
 
 # graph
 *.png
+!/assets/beliefstate-pltr-before-after.png
 
 # Txt files
 *.txt

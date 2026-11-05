@@ -52,6 +52,7 @@ or given per study (backtest).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from datetime import date as _date
@@ -90,10 +91,20 @@ from hedge_fund.tui.shared import BACKTEST_DAYS
 
 def main() -> None:
     apply_credentials()
-    ensure_mandates_dir()
     parser = _parser()
     args = parser.parse_args()
 
+    if args.command == "research":
+        from hedge_fund.research import API_KEY_ENV, ResearchError, read_research
+
+        try:
+            result = read_research(args.ticker, api_key=os.environ.get(API_KEY_ENV, ""), as_of=args.as_of)
+        except ResearchError as exc:
+            parser.exit(1, f"aihf research: {exc}\n")
+        print(json.dumps(result, indent=2))
+        return
+
+    ensure_mandates_dir()
     if args.model:
         os.environ["HEDGE_FUND_LLM_MODEL"] = args.model
 
@@ -146,6 +157,10 @@ def _parser() -> argparse.ArgumentParser:
     backtest.add_argument("--start", help=f"first session YYYY-MM-DD (default: {BACKTEST_DAYS} days before --end)")
     backtest.add_argument("--end", help="last session YYYY-MM-DD (default: the latest completed session)")
     backtest.add_argument("--out", help="also write the result JSON to this file")
+
+    research = commands.add_parser("research", help="read one cited company brief from BeliefState")
+    research.add_argument("ticker", help="company ticker with released BeliefState coverage")
+    research.add_argument("--as-of", help="optional RFC 3339 research cutoff, e.g. 2026-10-30T20:00:00Z")
 
     paper = commands.add_parser("paper", help="deploy and advance a paper fund")
     actions = paper.add_subparsers(dest="action", required=True)

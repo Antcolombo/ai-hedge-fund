@@ -318,6 +318,44 @@ def signal_detail(record: CycleRecord | DecisionRecord, si: int, sj: int) -> Gro
     )
 
 
+def investor_context(result: dict) -> Group:
+    """Render a separate research read alongside the saved analyst signal."""
+    lines = [Text("BeliefState · Published investor views", style=f"bold {BRIGHT}")]
+    brief = result.get("brief", {})
+    cutoff = brief.get("as_of", result.get("as_of"))
+    lines.append(Text(f"Research as of {cutoff} · loaded separately", style=MUTED))
+    if result["status"] == "no_released_coverage":
+        return Group(*lines, Text("No released research for this ticker.", style=MUTED))
+    if result["status"] == "no_matching_beliefs":
+        lines.append(Text("No published views could be shown in this brief.", style=MUTED))
+
+    for belief in brief["beliefs"] if result["status"] == "available" else []:
+        person = belief.get("person")
+        author = person.get("name") if isinstance(person, dict) else None
+        stance = belief.get("direction") or "Stance unknown"
+        lines.extend([Text(""), Text(f"{author or 'Author unknown'} · {stance}"), Text(belief["thesis"])])
+        for source in belief["evidence"]:
+            if isinstance(source, dict) and isinstance(source.get("source_url"), str):
+                published = source.get("published_at") or "Publication date unknown"
+                lines.append(Text(f"{published} · {source['source_url']}", style=MUTED))
+        qualifications = belief.get("qualifications")
+        if isinstance(qualifications, list):
+            lines.extend(Text(value) for value in qualifications if isinstance(value, str))
+        for label, field in (("Risk", "risks"), ("Catalyst", "catalysts")):
+            items = belief.get(field)
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict) and isinstance(item.get("statement"), str):
+                        lines.append(Text(f"{label} · {item['statement']}"))
+    omitted = brief["coverage"].get("omitted_belief_count", 0)
+    if omitted:
+        lines.append(Text(f"Additional views omitted from this brief: {omitted}", style=MUTED))
+    lines.extend(Text(warning, style=MUTED) for warning in brief["warnings"] if isinstance(warning, str))
+    if isinstance(brief.get("detail_reference"), str):
+        lines.append(Text(f"Research details · {brief['detail_reference']}", style=MUTED))
+    return Group(*lines)
+
+
 def portfolio_detail(record: CycleRecord) -> Group:
     target_net = record.equity_before * sum(record.final_weights.values())
     actual_net = sum(shares * record.marks[ticker] for ticker, shares in record.positions.items())

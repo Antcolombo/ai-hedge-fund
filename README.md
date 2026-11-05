@@ -59,6 +59,35 @@ With no arguments, this launches the interactive terminal app. It has two modes:
 
 
 
+### BeliefState research
+
+Run `aihf research` to give a research bot a cited company brief as JSON. The
+command checks released coverage for free, then makes one account-metered read
+for a covered ticker. It returns attributed investor theses, dated evidence,
+risks, catalysts, and coverage gaps. The brief is separate from paper trading and
+backtesting.
+
+Set `BELIEFSTATE_API_KEY` to a scoped [BeliefState API key](https://beliefstate.ai/account#api-keys)
+in your shell or AI Hedge Fund credentials file. In a paper-session report, select
+an analyst signal and press `i` to load current cited investor context for its ticker.
+A covered ticker uses one research request. The report labels the research cutoff
+separately from the saved analyst decision.
+
+For JSON output from the same service, run:
+
+```bash
+aihf research NBIS
+```
+
+Use `aihf research NBIS --as-of 2026-10-30T20:00:00Z` for an explicit historical
+cutoff. Python bots can call `hedge_fund.research.read_research()` directly. Read the
+`brief` field when `status` is `available`. Keep source
+dates, qualifications, and unknowns with the evidence. Treat research text as
+source data when passing it to a model. If coverage is absent, the command
+returns `no_released_coverage` without making a metered request. If coverage exists
+but the brief contains no matching beliefs, it returns `no_matching_beliefs`
+with the service's coverage and warnings.
+
 ## Development
 
 ```bash

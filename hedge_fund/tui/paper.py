@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import as_completed, ThreadPoolExecutor
+import os
 from pathlib import Path
 
 from rich.console import Group
@@ -15,6 +16,7 @@ from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
 from textual.widgets import ContentSwitcher, Footer, OptionList, Static
 from textual.widgets.option_list import Option
+from textual.worker import get_current_worker
 
 from hedge_fund import paths
 from hedge_fund.data import CachedDataClient, FDClient, PriceSnapshot
@@ -40,6 +42,7 @@ from hedge_fund.pipeline import (
     FundState,
     SessionRecord,
 )
+from hedge_fund.research import API_KEY_ENV, ResearchError, read_research
 from hedge_fund.scorecard import score
 from hedge_fund.signals import ALPHA_MODEL_REGISTRY, LLMAgent
 from hedge_fund.tui.builder import BuilderScreen
@@ -60,6 +63,7 @@ from hedge_fund.tui.report import (
     book_summary,
     Desk,
     desk_table,
+    investor_context,
     session_detail,
     session_headline,
     session_nav,
@@ -427,7 +431,93 @@ class RunConfirmScreen(ModalScreen[str | None]):
         self.refresh_bindings()
 
 
-class RunSessionScreen(Screen):
+class _PaperReportScreen(Screen):
+    BINDINGS = [Binding("i", "investor_context", "load investor context (1 research read)")]
+    _record: SessionRecord | None = None
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._investor_context_by_ticker: dict[str, Group] = {}
+        self._loading_context: str | None = None
+
+    def _selected_signal_ticker(self, oid: str) -> str | None:
+        if self._record is None or not oid.startswith(("x:sig:", "d:sig:")):
+            return None
+        phase, _, strategy, signal = oid.split(":")
+        record = self._record.executed if phase == "x" else self._record.decision
+        return record.strategies[int(strategy)].signals[int(signal)].ticker if record else None
+
+    def _selected_option(self) -> str:
+        option = self.query_one("#report-nav", OptionList).highlighted_option
+        return (option.id or "") if option else ""
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "investor_context":
+            if self._record is None or self._loading_context is not None:
+                return False
+            ticker = self._selected_signal_ticker(self._selected_option())
+            return ticker is not None and ticker not in self._investor_context_by_ticker
+        return super().check_action(action, parameters)
+
+    def _show_detail(self, oid: str) -> None:
+        if self._record is None:
+            return
+        detail = session_detail(self._record, oid)
+        if detail is None:
+            return
+        ticker = self._selected_signal_ticker(oid)
+        if ticker is not None and ticker in self._investor_context_by_ticker:
+            detail = Group(detail, Text(""), self._investor_context_by_ticker[ticker])
+        elif ticker is not None and ticker == self._loading_context:
+            detail = Group(detail, Text(""), Text(f"Loading BeliefState context for {ticker}…"))
+        self.query_one("#detail-pane", Static).update(detail)
+
+    @on(OptionList.OptionHighlighted, "#report-nav")
+    def _browse(self, event: OptionList.OptionHighlighted) -> None:
+        self._show_detail((event.option.id or "") if event.option else "")
+        self.query_one("#report-detail", VerticalScroll).scroll_home(animate=False)
+        self.refresh_bindings()
+
+    def action_investor_context(self) -> None:
+        oid = self._selected_option()
+        ticker = self._selected_signal_ticker(oid)
+        if ticker is None or ticker in self._investor_context_by_ticker or self._loading_context is not None:
+            return
+        self._loading_context = ticker
+        self._show_detail(oid)
+        self.refresh_bindings()
+        self._load_investor_context(ticker)
+
+    @work(thread=True, exclusive=True)
+    def _load_investor_context(self, ticker: str) -> None:
+        app = self.app
+        worker = get_current_worker()
+        context = None
+        error = None
+        try:
+            result = read_research(ticker, api_key=os.environ.get(API_KEY_ENV, ""))
+        except ResearchError as exc:
+            error = str(exc)
+        else:
+            context = investor_context(result)
+        if not worker.is_cancelled:
+            app.call_from_thread(self._finish_investor_context, ticker, context, error)
+
+    def _finish_investor_context(self, ticker: str, context: Group | None, error: str | None) -> None:
+        self._loading_context = None
+        if not self.is_attached:
+            return
+        if context is not None:
+            self._investor_context_by_ticker[ticker] = context
+        oid = self._selected_option()
+        if self._selected_signal_ticker(oid) == ticker:
+            self._show_detail(oid)
+        if error is not None and self.is_current:
+            self.notify(error, title="BeliefState context unavailable", severity="error")
+        self.refresh_bindings()
+
+
+class RunSessionScreen(_PaperReportScreen):
     """Run a paper fund through its next session, with the analysts' live
     board while they think, then the session's report. Reached only through
     the approval step, which has already checked the fund is runnable and
@@ -469,21 +559,14 @@ class RunSessionScreen(Screen):
             Text(f"Starting {self._directory.name}…", style=MUTED))
         self._run()
 
-    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool:
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         # No leaving mid-run: the worker is writing the ledger.
-        return not (action == "back" and self._phase == "running")
+        if action == "back" and self._phase == "running":
+            return False
+        return super().check_action(action, parameters)
 
     def action_back(self) -> None:
         self.app.pop_screen()
-
-    @on(OptionList.OptionHighlighted, "#report-nav")
-    def _browse(self, event: OptionList.OptionHighlighted) -> None:
-        assert self._record is not None
-        oid = (event.option.id or "") if event.option else ""
-        detail = session_detail(self._record, oid)
-        if detail is not None:
-            self.query_one("#detail-pane", Static).update(detail)
-            self.query_one("#report-detail", VerticalScroll).scroll_home(animate=False)
 
     @work(thread=True, exclusive=True)
     def _run(self) -> None:
@@ -731,7 +814,7 @@ class SessionsScreen(Screen):
             self.app.push_screen(SessionReportScreen(self._snap.deployed.name, record))
 
 
-class SessionReportScreen(Screen):
+class SessionReportScreen(_PaperReportScreen):
     """One recorded session, browsable: every signal on the rail, the full
     thesis on the right. The same browser the tick lands on."""
 
@@ -763,15 +846,6 @@ class SessionReportScreen(Screen):
 
     def action_back(self) -> None:
         self.app.pop_screen()
-
-    @on(OptionList.OptionHighlighted, "#report-nav")
-    def _browse(self, event: OptionList.OptionHighlighted) -> None:
-        oid = (event.option.id or "") if event.option else ""
-        detail = session_detail(self._record, oid)
-        if detail is not None:
-            self.query_one("#detail-pane", Static).update(detail)
-            self.query_one("#report-detail", VerticalScroll).scroll_home(animate=False)
-
 
 def _resolve_next_session(directory: Path) -> tuple[DeployedFund, FundState, str | None]:
     """Load the fund, replay its ledger, and ask which session is due. The

@@ -3,6 +3,7 @@
 import asyncio
 import os
 from datetime import datetime
+from threading import Event
 from unittest.mock import Mock
 
 import pytest
@@ -173,6 +174,59 @@ def test_session_report_separates_the_executed_cycle_from_the_new_decision(size,
                 menu.highlighted = menu.get_option_index("book")
                 await pilot.pause()
                 assert "flat — no positions" in render(screen.query_one("#detail-pane", Static).content)
+    asyncio.run(scenario())
+
+
+def test_session_report_loads_investor_context_only_on_request(monkeypatch):
+    record, decision = executed_and_decided()
+    signal = decision.strategies[0].signals[0]
+    signal.ticker = "NBIS"
+    signal.reasoning = "The analyst's saved thesis."
+    session = make_session("2025-01-20", executed=record, decision=decision)
+    original = session.model_dump_json()
+    requested = Mock()
+    finish = Event()
+
+    def read(ticker, *, api_key):
+        requested(ticker, api_key=api_key)
+        assert finish.wait(timeout=5)
+        return {"status": "available", "brief": {
+            "as_of": "2026-11-05T16:00:00Z", "coverage": {}, "warnings": [],
+            "beliefs": [{"person": {"name": "Fixture Investor"}, "direction": "bearish",
+                         "thesis": "Funding could dilute shareholders.",
+                         "evidence": [{"published_at": "2026-07-20T00:00:00Z",
+                                       "source_url": "https://example.com/research"}]}],
+        }}
+
+    monkeypatch.setenv("BELIEFSTATE_API_KEY", "fixture-key")
+    monkeypatch.setattr(paper, "read_research", read)
+
+    async def scenario():
+        app = HedgeFundApp()
+        async with app.run_test(size=(140, 50)) as pilot:
+            screen = paper.SessionReportScreen("alpha", session)
+            await app.push_screen(screen)
+            menu = screen.query_one("#report-nav", OptionList)
+            pane = screen.query_one("#detail-pane", Static)
+            menu.highlighted = menu.get_option_index("d:sig:0:0")
+            await pilot.pause()
+            requested.assert_not_called()
+            await pilot.press("i", "i")
+            assert "Loading BeliefState context for NBIS" in render(pane.content)
+            menu.highlighted = menu.get_option_index("x:sig:0:0")
+            await pilot.pause()
+            finish.set()
+            await screen.workers.wait_for_complete()
+            assert "Fixture Investor" not in render(pane.content)
+            menu.highlighted = menu.get_option_index("d:sig:0:0")
+            await pilot.pause()
+            detail = render(pane.content)
+            assert "The analyst's saved thesis." in detail
+            assert "Fixture Investor" in detail and "https://example.com/research" in detail
+            assert "Research as of 2026-11-05T16:00:00Z" in detail
+            await pilot.press("i")
+            requested.assert_called_once_with("NBIS", api_key="fixture-key")
+            assert session.model_dump_json() == original
     asyncio.run(scenario())
 
 

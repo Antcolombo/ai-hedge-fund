@@ -364,6 +364,7 @@ class RunConfirmScreen(ModalScreen[str | None]):
     BINDINGS = [
         Binding("escape", "cancel", "cancel"),
         Binding("enter", "confirm", "run", priority=True),
+        Binding("i", "review_context", "review investor context"),
     ]
 
     def __init__(self, directory: Path) -> None:
@@ -371,6 +372,7 @@ class RunConfirmScreen(ModalScreen[str | None]):
         self._directory = directory
         self._verdict: str | None = None  # what enter will do once resolved
         self._ready = False
+        self._review_tickers: list[str] = []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="run-confirm"):
@@ -388,6 +390,8 @@ class RunConfirmScreen(ModalScreen[str | None]):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool:
         if action == "confirm":
             return self._ready and self._verdict is not None
+        if action == "review_context":
+            return bool(self._review_tickers)
         return True
 
     def action_cancel(self) -> None:
@@ -396,18 +400,44 @@ class RunConfirmScreen(ModalScreen[str | None]):
     def action_confirm(self) -> None:
         self.dismiss(self._verdict)
 
+    def action_review_context(self) -> None:
+        if not self._review_tickers:
+            return
+        tickers = self._review_tickers
+        self._ready = False
+        self._verdict = None
+        self._review_tickers = []
+        self.query_one("#run-body", Static).update(Text("Checking the next paper session…", style=MUTED))
+        self.query_one("#run-keys", Static).update(Text("esc  cancel", style=MUTED))
+        self.refresh_bindings()
+        self.app.push_screen(_PendingResearchScreen(tickers), self._refresh_after_review)
+
+    def _refresh_after_review(self, _: None) -> None:
+        self._resolve()
+
     @work(thread=True, exclusive=True)
     def _resolve(self) -> None:
         app = self.app
+        worker = get_current_worker()
         try:
             deployed, state, due = _resolve_next_session(self._directory)
         except Exception as exc:
-            app.call_from_thread(self._show_error, exc)
+            if not worker.is_cancelled:
+                app.call_from_thread(self._show_error, exc)
             return
-        app.call_from_thread(self._show, deployed, state, due)
+        if not worker.is_cancelled:
+            app.call_from_thread(self._show, deployed, state, due)
 
     def _show(self, deployed: DeployedFund, state: FundState, due: str | None) -> None:
+        if not self.is_attached:
+            return
         self._verdict = "run" if due is not None else "redo" if state.last_session else None
+        self._review_tickers = []
+        if due is not None and state.pending is not None:
+            self._review_tickers = sorted(
+                {ticker for ticker, weight in state.pending.final_weights.items() if weight}
+                | {ticker for ticker, shares in state.positions.items() if shares}
+            )
         self._ready = True
         self.query_one("#run-q", Static).update(Text.assemble(
             ("Run ", f"bold {BRIGHT}"), (deployed.name, f"bold {GREEN}"),
@@ -421,31 +451,34 @@ class RunConfirmScreen(ModalScreen[str | None]):
             keys.append("  run   " if self._verdict == "run" else "  run again   ", style=MUTED)
         keys.append("esc", style=f"bold {BRIGHT}")
         keys.append("  cancel", style=MUTED)
+        if self._review_tickers:
+            keys.append("   i", style=f"bold {BRIGHT}")
+            keys.append("  review investor context", style=MUTED)
         self.query_one("#run-keys", Static).update(keys)
         self.refresh_bindings()
 
     def _show_error(self, exc: Exception) -> None:
+        if not self.is_attached:
+            return
         self._ready = True
         self.query_one("#run-body", Static).update(
             Text.assemble(("✗ ", f"bold {RED}"), (f"{type(exc).__name__}: {exc}", RED)))
         self.refresh_bindings()
 
 
-class _PaperReportScreen(Screen):
+class _InvestorContextScreen(Screen):
     BINDINGS = [Binding("i", "investor_context", "load investor context (1 research read)")]
-    _record: SessionRecord | None = None
 
     def __init__(self) -> None:
         super().__init__()
         self._investor_context_by_ticker: dict[str, Group] = {}
         self._loading_context: str | None = None
 
-    def _selected_signal_ticker(self, oid: str) -> str | None:
-        if self._record is None or not oid.startswith(("x:sig:", "d:sig:")):
-            return None
-        phase, _, strategy, signal = oid.split(":")
-        record = self._record.executed if phase == "x" else self._record.decision
-        return record.strategies[int(strategy)].signals[int(signal)].ticker if record else None
+    def _ticker_for_option(self, oid: str) -> str | None:
+        raise NotImplementedError
+
+    def _detail_for_option(self, oid: str) -> Group | None:
+        raise NotImplementedError
 
     def _selected_option(self) -> str:
         option = self.query_one("#report-nav", OptionList).highlighted_option
@@ -453,19 +486,17 @@ class _PaperReportScreen(Screen):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "investor_context":
-            if self._record is None or self._loading_context is not None:
+            if self._loading_context is not None:
                 return False
-            ticker = self._selected_signal_ticker(self._selected_option())
+            ticker = self._ticker_for_option(self._selected_option())
             return ticker is not None and ticker not in self._investor_context_by_ticker
         return super().check_action(action, parameters)
 
     def _show_detail(self, oid: str) -> None:
-        if self._record is None:
-            return
-        detail = session_detail(self._record, oid)
+        detail = self._detail_for_option(oid)
         if detail is None:
             return
-        ticker = self._selected_signal_ticker(oid)
+        ticker = self._ticker_for_option(oid)
         if ticker is not None and ticker in self._investor_context_by_ticker:
             detail = Group(detail, Text(""), self._investor_context_by_ticker[ticker])
         elif ticker is not None and ticker == self._loading_context:
@@ -480,7 +511,7 @@ class _PaperReportScreen(Screen):
 
     def action_investor_context(self) -> None:
         oid = self._selected_option()
-        ticker = self._selected_signal_ticker(oid)
+        ticker = self._ticker_for_option(oid)
         if ticker is None or ticker in self._investor_context_by_ticker or self._loading_context is not None:
             return
         self._loading_context = ticker
@@ -510,11 +541,62 @@ class _PaperReportScreen(Screen):
         if context is not None:
             self._investor_context_by_ticker[ticker] = context
         oid = self._selected_option()
-        if self._selected_signal_ticker(oid) == ticker:
+        if self._ticker_for_option(oid) == ticker:
             self._show_detail(oid)
         if error is not None and self.is_current:
             self.notify(error, title="BeliefState context unavailable", severity="error")
         self.refresh_bindings()
+
+
+class _PendingResearchScreen(_InvestorContextScreen, inherit_bindings=False):
+    BINDINGS = [
+        Binding("escape", "back", "back to run approval"),
+        Binding("l", "investor_context", "load context (1 research read)"),
+    ]
+
+    def __init__(self, tickers: list[str]) -> None:
+        super().__init__()
+        self._tickers = tickers
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="run-report"):
+            yield Static("Investor context before the paper run", id="report-head")
+            with Horizontal(id="report-panes"):
+                with Vertical(id="report-rail"):
+                    yield OptionList(*(Option(ticker, id=ticker) for ticker in self._tickers), id="report-nav")
+                with VerticalScroll(id="report-detail"):
+                    yield Static("", id="detail-pane")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        nav = self.query_one("#report-nav", OptionList)
+        nav.highlighted = 0
+        nav.focus()
+
+    def action_back(self) -> None:
+        self.dismiss()
+
+    def _ticker_for_option(self, oid: str) -> str | None:
+        return oid or None
+
+    def _detail_for_option(self, oid: str) -> Group | None:
+        if not oid:
+            return None
+        return Group(Text(oid, style=f"bold {BRIGHT}"), Text("Review published views for this ticker before deciding whether to run."))
+
+
+class _PaperReportScreen(_InvestorContextScreen):
+    _record: SessionRecord | None = None
+
+    def _ticker_for_option(self, oid: str) -> str | None:
+        if self._record is None or not oid.startswith(("x:sig:", "d:sig:")):
+            return None
+        phase, _, strategy, signal = oid.split(":")
+        record = self._record.executed if phase == "x" else self._record.decision
+        return record.strategies[int(strategy)].signals[int(signal)].ticker if record else None
+
+    def _detail_for_option(self, oid: str) -> Group | None:
+        return session_detail(self._record, oid) if self._record is not None else None
 
 
 class RunSessionScreen(_PaperReportScreen):

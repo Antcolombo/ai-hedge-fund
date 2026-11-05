@@ -73,6 +73,10 @@ an analyst signal and press `i` to load current cited investor context for its t
 A covered ticker uses one research request. The report labels the research cutoff
 separately from the saved analyst decision.
 
+When the run preview shows a pending decision, press `i` to review investor
+context for a proposed or held ticker. Use the arrow keys to select a ticker and
+press `l` to load it. Press Escape to return to the run preview.
+
 For JSON output from the same service, run:
 
 ```bash

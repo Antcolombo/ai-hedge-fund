@@ -18,9 +18,11 @@ from hedge_fund.tui.app import HedgeFundApp
 from hedge_fund.tui.fixtures import (
     executed_and_decided,
     make_minute_spec,
+    make_pending,
     make_quote,
     make_session,
     make_spec,
+    make_state,
     render,
 )
 
@@ -227,6 +229,45 @@ def test_session_report_loads_investor_context_only_on_request(monkeypatch):
             await pilot.press("i")
             requested.assert_called_once_with("NBIS", api_key="fixture-key")
             assert session.model_dump_json() == original
+    asyncio.run(scenario())
+
+
+def test_pending_research_returns_to_approval_without_starting_the_run(monkeypatch):
+    directory = deploy("alpha", make_spec(), ["AAPL", "NBIS", "TEST"], root=paths.PAPER_DIR)
+    state = make_state(pending=make_pending(weights={"NBIS": .25, "TEST": 0}), positions={"AAPL": 10})
+    deployed = load_deployed(directory)
+    resolve = Mock(side_effect=[(deployed, state, "2025-01-21"), (deployed, state, "2025-01-22")])
+    monkeypatch.setattr(paper, "_resolve_next_session", resolve)
+    monkeypatch.setenv("BELIEFSTATE_API_KEY", "fixture-key")
+    read = Mock(side_effect=paper.ResearchError("Check your research allowance."))
+    monkeypatch.setattr(paper, "read_research", read)
+    verdicts = []
+
+    async def scenario():
+        app = HedgeFundApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            approval = paper.RunConfirmScreen(directory)
+            await app.push_screen(approval, verdicts.append)
+            await approval.workers.wait_for_complete()
+            assert "2025-01-21 close" in render(approval.query_one("#run-body", Static).content)
+            assert "review investor context" in render(approval.query_one("#run-keys", Static).content)
+            await pilot.press("i")
+            review = app.screen
+            assert not approval.check_action("confirm", ())
+            menu = review.query_one("#report-nav", OptionList)
+            assert [menu.get_option_at_index(i).id for i in range(menu.option_count)] == ["AAPL", "NBIS"]
+            await pilot.press("i", "down", "enter")
+            read.assert_not_called()
+            assert app.screen is review and verdicts == []
+            await pilot.press("l")
+            await review.workers.wait_for_complete()
+            read.assert_called_once_with("NBIS", api_key="fixture-key")
+            await pilot.press("escape")
+            assert app.screen is approval and verdicts == []
+            await approval.workers.wait_for_complete()
+            assert "2025-01-22 close" in render(approval.query_one("#run-body", Static).content)
+            await pilot.press("enter")
+            assert verdicts == ["run"]
     asyncio.run(scenario())
 
 

@@ -23,11 +23,13 @@ By using this software, you agree to use it solely for learning purposes.
 
 ## How to Install
 
+From this checkout, install the build with BeliefState research.
+
 ```bash
-pipx install aihf
+pipx install .
 ```
 
-(or `uv tool install aihf`, or `pip install aihf` into an environment of your choice)
+You can also use `uv tool install .` or `pip install .` in a virtual environment.
 
 Then run it from anywhere:
 
@@ -39,7 +41,7 @@ aihf
 
 The app asks for keys the first time it needs them and saves them to `~/.hedge-fund/.env` — nothing to configure up front. It needs:
 
-- A [Financial Datasets](https://financialdatasets.ai) API key, for prices, fundamentals, and earnings. Or, instead of a key, the private key of a Base wallet holding USDC: every call then pays for itself with [x402](https://docs.financialdatasets.ai/x402) (`pip install 'aihf[x402]'`; last 365 days of data, non-professional use).
+- A [Financial Datasets](https://financialdatasets.ai) API key, for prices, fundamentals, and earnings. A Base wallet holding USDC can also pay per call with [x402](https://docs.financialdatasets.ai/x402) for non-professional use with up to 365 days of history. Install the wallet support from this checkout with `pipx install '.[x402]'` or `pip install '.[x402]'` in a virtual environment.
 - One model API key for the investor agents. Supported providers: Anthropic, OpenAI, DeepSeek, Google, xAI, Kimi, TypeSafe (Jev).
 
 Keys exported in your shell always win over the saved file.
@@ -94,9 +96,9 @@ with the service's coverage and warnings.
 
 ## Development
 
+Run these commands from this checkout.
+
 ```bash
-git clone https://github.com/virattt/ai-hedge-fund.git
-cd ai-hedge-fund
 poetry install
 poetry run aihf
 poetry run pytest hedge_fund

@@ -526,7 +526,11 @@ class _InvestorContextScreen(Screen):
         context = None
         error = None
         try:
-            result = read_research(ticker, api_key=os.environ.get(API_KEY_ENV, ""))
+            result = read_research(
+                ticker,
+                api_key=os.environ.get(API_KEY_ENV, ""),
+                cancelled=lambda: worker.is_cancelled or not self.is_attached or not self.is_current,
+            )
         except ResearchError as exc:
             error = str(exc)
         else:

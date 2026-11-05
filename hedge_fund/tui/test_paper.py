@@ -4,13 +4,13 @@ import asyncio
 import os
 from datetime import datetime
 from threading import Event
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 import pytest
 import yaml
 from textual.widgets import ContentSwitcher, Input, OptionList, Static
 
-from hedge_fund import paths
+from hedge_fund import paths, research
 from hedge_fund.data.sessions import NEW_YORK
 from hedge_fund.paper import deploy, Ledger, load_deployed, PID_FILE
 from hedge_fund.tui import backtest, funds, paper, paper_view, report
@@ -189,8 +189,8 @@ def test_session_report_loads_investor_context_only_on_request(monkeypatch):
     requested = Mock()
     finish = Event()
 
-    def read(ticker, *, api_key):
-        requested(ticker, api_key=api_key)
+    def read(ticker, **kwargs):
+        requested(ticker, **kwargs)
         assert finish.wait(timeout=5)
         return {"status": "available", "brief": {
             "as_of": "2026-11-05T16:00:00Z", "coverage": {}, "warnings": [],
@@ -227,7 +227,7 @@ def test_session_report_loads_investor_context_only_on_request(monkeypatch):
             assert "Fixture Investor" in detail and "https://example.com/research" in detail
             assert "Research as of 2026-11-05T16:00:00Z" in detail
             await pilot.press("i")
-            requested.assert_called_once_with("NBIS", api_key="fixture-key")
+            requested.assert_called_once_with("NBIS", api_key="fixture-key", cancelled=ANY)
             assert session.model_dump_json() == original
     asyncio.run(scenario())
 
@@ -261,13 +261,56 @@ def test_pending_research_returns_to_approval_without_starting_the_run(monkeypat
             assert app.screen is review and verdicts == []
             await pilot.press("l")
             await review.workers.wait_for_complete()
-            read.assert_called_once_with("NBIS", api_key="fixture-key")
+            read.assert_called_once_with("NBIS", api_key="fixture-key", cancelled=ANY)
             await pilot.press("escape")
             assert app.screen is approval and verdicts == []
             await approval.workers.wait_for_complete()
             assert "2025-01-22 close" in render(approval.query_one("#run-body", Static).content)
             await pilot.press("enter")
             assert verdicts == ["run"]
+    asyncio.run(scenario())
+
+
+def test_leaving_during_free_coverage_does_not_send_the_metered_read(monkeypatch):
+    started, release, exited = Event(), Event(), Event()
+    free = Mock()
+    response = free.getresponse.return_value
+    response.status = 200
+
+    def read_coverage(_limit):
+        started.set()
+        assert release.wait(timeout=5)
+        return b'{"resource":"beliefs","as_of":"2026-11-05T16:00:00Z","tickers":["TEST"]}'
+
+    response.read.side_effect = read_coverage
+    connection = Mock(return_value=free)
+    monkeypatch.setattr(research, "HTTPSConnection", connection)
+    monkeypatch.setenv(research.API_KEY_ENV, "fixture-key")
+
+    def read(ticker, **kwargs):
+        try:
+            return research.read_research(ticker, **kwargs)
+        finally:
+            exited.set()
+
+    monkeypatch.setattr(paper, "read_research", read)
+    _, decision = executed_and_decided()
+
+    async def scenario():
+        app = HedgeFundApp()
+        async with app.run_test() as pilot:
+            home = app.screen
+            await app.push_screen(paper.SessionReportScreen("alpha", make_session("2025-01-20", decision=decision)))
+            await pilot.press("i")
+            try:
+                assert await asyncio.to_thread(started.wait, 5)
+                await pilot.press("escape")
+                assert app.screen is home
+            finally:
+                release.set()
+            assert await asyncio.to_thread(exited.wait, 5)
+            free.request.assert_called_once_with("GET", "/v1/tickers", headers={"Accept": "application/json"})
+            connection.assert_called_once()
     asyncio.run(scenario())
 
 

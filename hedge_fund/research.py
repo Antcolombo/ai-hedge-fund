@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
 from http.client import HTTPException, HTTPSConnection
 from urllib.parse import urlencode
@@ -55,7 +56,9 @@ def _read(path: str, params: dict[str, str], *, api_key: str = "", request_id: s
         connection.close()
 
 
-def read_research(ticker: str, *, api_key: str, as_of: str | None = None) -> dict:
+def read_research(
+    ticker: str, *, api_key: str, as_of: str | None = None, cancelled: Callable[[], bool] | None = None,
+) -> dict:
     """Return one bounded, cited company brief after a free coverage check."""
     ticker = ticker.strip().upper()
     if not re.fullmatch(r"[A-Z0-9][A-Z0-9.-]{0,31}", ticker):
@@ -89,6 +92,8 @@ def read_research(ticker: str, *, api_key: str, as_of: str | None = None) -> dic
         raise ResearchError("BeliefState coverage did not match the requested cutoff.")
     if ticker not in tickers:
         return {"ticker": ticker, "status": "no_released_coverage", "as_of": coverage["as_of"]}
+    if cancelled is not None and cancelled():
+        raise ResearchError("Research cancelled.")
 
     request_id = str(uuid4())
     try:
